@@ -7,7 +7,8 @@ optional Google Drive sync to share it across devices.
 ## Features
 
 - Date picker (defaults to today); picking a date with an existing entry
-  loads it for editing, otherwise defaults to 80.0 kg.
+  loads it for editing. Otherwise it's pre-filled with the closest prior
+  entry (e.g. yesterday's weight), or 80.0 kg if there's no data yet.
 - Weight entry in kg with one decimal, plus ▲/▼ buttons that nudge by 0.1 kg.
 - "OK" saves (inserts or updates) the entry for the selected date.
 - Trend chart with three views: Per day, Average per week, Every Monday.
@@ -26,6 +27,21 @@ npx serve .
 
 or open `index.html` directly (Drive sync requires being served over
 `http://` / `https://`, not `file://`, since Google OAuth needs an origin).
+
+## Releasing a change
+
+There's no build step, so the footer's version/build shown in the app is
+maintained by hand in [`js/version.js`](js/version.js) — bump it in the same
+commit as the change it ships:
+
+- `APP_VERSION` — bump the patch digit for fixes, minor for new features.
+- `APP_BUILD` — set to today's date plus a sequence number
+  (`YYYY.MM.DD.N`), so you can tell which deploy is live by comparing the
+  footer on [the live site](https://bluewael.github.io/WeightTracker/) against
+  the latest commit.
+
+Pushing to `main` deploys automatically via GitHub Pages (usually live within
+a minute or two).
 
 ## Setting up Google Drive sync (optional)
 

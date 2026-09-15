@@ -1,11 +1,12 @@
 // Minimal offline cache for the app shell. All data lives in IndexedDB
 // (+ optional Google Drive sync), so this only needs to cache static files —
 // no data ever passes through here.
-const CACHE_NAME = 'weighttracker-v1';
+const CACHE_NAME = 'weighttracker-v2';
 const APP_SHELL = [
   './',
   './index.html',
   './css/app.css',
+  './js/version.js',
   './js/utils.js',
   './js/db.js',
   './js/weight.js',
