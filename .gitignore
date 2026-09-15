@@ -1,0 +1,16 @@
+# Local Claude Code / dev-tool configuration — not part of the app
+.claude/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor caches
+.vscode/
+.idea/
+*.swp
+
+# Node artifacts (in case anyone adds a build step later)
+node_modules/
+dist/

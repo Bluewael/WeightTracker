@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Weight Tracker</title>
+  <meta name="theme-color" content="#3b82f6" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="css/app.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9A%96%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%233b82f6'/%3E%3Ctext x='50' y='68' font-size='55' text-anchor='middle'%3E%E2%9A%96%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <div id="app" x-data="appState()" x-cloak>
+    <nav class="topbar">
+      <div class="brand">⚖️ Weight</div>
+      <div class="tabs">
+        <button :class="{ active: page === 'track' }" @click="page = 'track'">Track</button>
+        <button :class="{ active: page === 'sync' }" @click="page = 'sync'">Sync</button>
+      </div>
+    </nav>
+
+    <main>
+      <!-- TRACK -->
+      <section x-show="page === 'track'" x-data="weightPage()" x-init="init()">
+        <div class="card-block entry-card">
+          <label class="field-label" for="entry-date">Date</label>
+          <input id="entry-date" type="date" class="date-input" :value="date"
+                 @change="onDateChange($event.target.value)" />
+
+          <div class="weight-row">
+            <button class="stepper-btn" @click="adjust(-0.1)" aria-label="Decrease by 0.1 kg">▼</button>
+            <div class="weight-display">
+              <input type="number" step="0.1" inputmode="decimal" class="weight-input"
+                     x-model.number="weightKg" @blur="onBlurWeight()" />
+              <span class="unit">kg</span>
+            </div>
+            <button class="stepper-btn" @click="adjust(0.1)" aria-label="Increase by 0.1 kg">▲</button>
+          </div>
+
+          <p class="hint" x-show="!hasExisting">No entry yet for this date — defaulted to 80.0 kg.</p>
+          <p class="hint" x-show="hasExisting">Editing the saved entry for this date.</p>
+
+          <button class="primary accept-btn" @click="accept()">OK</button>
+          <span class="saved-flash" x-show="savedFlash" x-transition.opacity>Saved ✓</span>
+        </div>
+
+        <div class="card-block chart-card">
+          <header class="chart-header">
+            <h2>Trend</h2>
+            <div class="view-toggle" role="tablist" aria-label="Chart mode">
+              <button :class="{ active: chartMode === 'day' }" @click="chartMode = 'day'">Per day</button>
+              <button :class="{ active: chartMode === 'week-avg' }" @click="chartMode = 'week-avg'">Average per week</button>
+              <button :class="{ active: chartMode === 'monday' }" @click="chartMode = 'monday'">Every Monday</button>
+            </div>
+          </header>
+          <div class="chart-wrap">
+            <canvas id="weightChart"></canvas>
+          </div>
+          <p class="hint" x-show="!entries.length">No entries yet — log a weight above to see your trend.</p>
+        </div>
+      </section>
+
+      <!-- SYNC -->
+      <section x-show="page === 'sync'">
+        <header class="page-header"><h1>Sync &amp; backup</h1></header>
+
+        <!-- Optional Google Drive sync — self-contained Alpine component in
+             sync.js. When signed out, the app runs exactly as before. -->
+        <div class="card-block" x-data="syncPanel()" x-init="init()">
+          <h2>Google Drive sync <small class="badge" :class="signedIn ? 'ok' : 'warn'"
+                                     x-text="signedIn ? 'active' : 'off'"></small></h2>
+
+          <template x-if="!signedIn">
+            <div>
+              <p>Optional. When signed in, the app keeps a private
+                <code>weighttracker.json</code> in your Google Drive's appdata folder
+                (invisible to you in the Drive UI, private to this app) so your
+                weight log follows you across devices.</p>
+
+              <div x-show="hasDefaultClientId" style="margin-top: 0.75rem;">
+                <button class="primary" @click="signIn()" :disabled="!ready">
+                  Sign in with Google
+                </button>
+                <small class="hint" x-show="!ready">Loading Google sign-in library…</small>
+                <p class="hint" style="margin-top: 0.6rem;">
+                  If Google shows a "not verified" warning, click <em>Advanced → Go to app</em> to continue.
+                </p>
+              </div>
+
+              <!-- Only reached when the deployment has no DEFAULT_CLIENT_ID baked
+                   into sync.js. Not something end users should see in production. -->
+              <p x-show="!hasDefaultClientId" class="rule-error" style="margin-top: 0.75rem;">
+                Google Drive sync isn't configured on this deployment.
+                The app owner needs to set <code>DEFAULT_CLIENT_ID</code> in
+                <code>js/sync.js</code>.
+              </p>
+            </div>
+          </template>
+
+          <template x-if="signedIn">
+            <div>
+              <p>Signed in as <strong x-text="userEmail || 'Google account'"></strong>.
+                 Every change is auto-synced to Drive.</p>
+              <p class="hint">
+                Last synced: <span x-text="formatTime(lastSyncedAt)"></span>
+                <span x-show="syncing"> · syncing now…</span>
+                <span x-show="pendingUpload && !syncing"> · upload queued</span>
+              </p>
+              <button class="primary" @click="syncNow()" :disabled="syncing">Sync now</button>
+              <button @click="signOut()">Sign out</button>
+            </div>
+          </template>
+
+          <p class="rule-error" style="margin-top: 0.75rem;" x-show="lastError">
+            <span x-text="lastError"></span>
+          </p>
+        </div>
+
+        <div class="card-block" x-data="backupPage()">
+          <h2>Export</h2>
+          <p>Download a JSON file with every logged weight. Keep this safe — it's your only backup if you clear browser data <em>and</em> haven't set up Google Drive sync above.</p>
+          <button class="primary" @click="exportData()">Download backup</button>
+          <p class="hint" x-show="lastExport">Last export this session: <span x-text="lastExport"></span></p>
+
+          <h2 style="margin-top: 1.5rem;">Import</h2>
+          <p>Restore from a previous backup. <strong>This replaces all current data.</strong></p>
+          <input type="file" accept=".json,application/json" @change="importData($event.target.files[0])" />
+          <p x-show="importMsg" :class="importErr ? 'error' : 'success'" x-text="importMsg"></p>
+
+          <h2 style="margin-top: 1.5rem;">Reset</h2>
+          <p>Permanently delete all locally stored weight entries.</p>
+          <button class="danger" @click="resetAll()">Delete all local data</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/dexie@4.0.10/dist/dexie.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
+
+  <script src="js/utils.js?v=1"></script>
+  <script src="js/db.js?v=1"></script>
+  <script src="js/weight.js?v=1"></script>
+  <script src="js/backup.js?v=1"></script>
+  <script src="js/sync.js?v=1"></script>
+  <script src="js/app.js?v=1"></script>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('service-worker.js').catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
