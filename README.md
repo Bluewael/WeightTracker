@@ -39,9 +39,16 @@ commit as the change it ships:
   (`YYYY.MM.DD.N`), so you can tell which deploy is live by comparing the
   footer on [the live site](https://bluewael.github.io/WeightTracker/) against
   the latest commit.
+- Update the `?v=...` query string on every `<script src="js/...">` tag in
+  `index.html` to match the new `APP_BUILD`. GitHub Pages caches files for up
+  to 10 minutes (`Cache-Control: max-age=600`); without a new query string,
+  browsers can keep serving old JS under the old URL well after the deploy
+  — including a stale version footer, defeating the point of having one.
 
 Pushing to `main` deploys automatically via GitHub Pages (usually live within
-a minute or two).
+a minute or two). The footer itself may still take a few minutes to show the
+new build for anyone with a page already open, since GitHub Pages' CDN edges
+propagate a new deploy gradually — a fresh page load picks it up immediately.
 
 ## Setting up Google Drive sync (optional)
 
