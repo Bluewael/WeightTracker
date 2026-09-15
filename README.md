@@ -45,10 +45,16 @@ commit as the change it ships:
   browsers can keep serving old JS under the old URL well after the deploy
   — including a stale version footer, defeating the point of having one.
 
+The service worker ([`service-worker.js`](service-worker.js)) fetches its own
+static files network-first, falling back to its cache only when offline —
+so an online visitor always gets the deploy above, and stale files only ever
+show up for someone who's actually offline. It still needs its own
+`CACHE_NAME` bumped on changes that matter for offline use (so stale entries
+get pruned), but a forgotten bump there can no longer produce a stale version
+footer for anyone with a working connection.
+
 Pushing to `main` deploys automatically via GitHub Pages (usually live within
-a minute or two). The footer itself may still take a few minutes to show the
-new build for anyone with a page already open, since GitHub Pages' CDN edges
-propagate a new deploy gradually — a fresh page load picks it up immediately.
+a minute or two).
 
 ## Setting up Google Drive sync (optional)
 
