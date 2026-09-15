@@ -82,13 +82,17 @@ function weightPage() {
 
     // Per-day: raw points, one per logged day.
     // Average per week: one point per ISO week (Mon–Sun), averaging that
-    // week's logged entries.
+    // week's logged entries, plotted at that week's Monday.
     // Every Monday: only entries that were actually logged on a Monday.
+    // Each point carries an {x, y} pair (x = ISO date string) so the chart's
+    // time scale can space points by actual elapsed time rather than by
+    // logged-entry order — a 6-week gap in logging should look like a gap,
+    // not the same width as two consecutive days.
     get chartSeries() {
       if (this.chartMode === 'monday') {
         return this.entries
           .filter(e => isoWeekday(e.date) === 1)
-          .map(e => ({ label: shortLabel(e.date), value: e.weightKg }));
+          .map(e => ({ x: e.date, y: e.weightKg }));
       }
       if (this.chartMode === 'week-avg') {
         const byWeek = new Map();
@@ -100,23 +104,20 @@ function weightPage() {
         return [...byWeek.entries()]
           .sort(([a], [b]) => (a < b ? -1 : 1))
           .map(([key, vals]) => ({
-            label: shortLabel(key),
-            value: round1(vals.reduce((s, v) => s + v, 0) / vals.length)
+            x: key,
+            y: round1(vals.reduce((s, v) => s + v, 0) / vals.length)
           }));
       }
-      return this.entries.map(e => ({ label: shortLabel(e.date), value: e.weightKg }));
+      return this.entries.map(e => ({ x: e.date, y: e.weightKg }));
     },
 
     renderChart() {
       const canvas = document.getElementById('weightChart');
       if (!canvas) return;
       const series = this.chartSeries;
-      const labels = series.map(p => p.label);
-      const data = series.map(p => p.value);
 
       if (weightChart) {
-        weightChart.data.labels = labels;
-        weightChart.data.datasets[0].data = data;
+        weightChart.data.datasets[0].data = series;
         weightChart.update();
         return;
       }
@@ -124,10 +125,9 @@ function weightPage() {
       weightChart = new Chart(canvas, {
         type: 'line',
         data: {
-          labels,
           datasets: [{
             label: 'Weight (kg)',
-            data,
+            data: series,
             borderColor: '#3b82f6',
             backgroundColor: '#3b82f6',
             pointRadius: 3,
@@ -140,9 +140,19 @@ function weightPage() {
           maintainAspectRatio: false,
           plugins: {
             legend: { display: false },
-            tooltip: { callbacks: { label: ctx => `${ctx.parsed.y.toFixed(1)} kg` } }
+            tooltip: {
+              callbacks: {
+                title: ctx => shortLabel(ctx[0].raw.x),
+                label: ctx => `${ctx.parsed.y.toFixed(1)} kg`
+              }
+            }
           },
           scales: {
+            x: {
+              type: 'time',
+              time: { unit: 'day', tooltipFormat: 'MMM d, yyyy' },
+              ticks: { autoSkip: true, maxRotation: 0 }
+            },
             y: { ticks: { callback: v => `${Number(v).toFixed(1)} kg` } }
           }
         }
