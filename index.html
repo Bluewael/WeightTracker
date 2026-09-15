@@ -38,7 +38,8 @@
             <button class="stepper-btn" @click="adjust(0.1)" aria-label="Increase by 0.1 kg">▲</button>
           </div>
 
-          <p class="hint" x-show="!hasExisting">No entry yet for this date — defaulted to 80.0 kg.</p>
+          <p class="hint" x-show="!hasExisting && carriedFromDate">No entry yet for this date — carried forward from <span x-text="carriedFromDate"></span>.</p>
+          <p class="hint" x-show="!hasExisting && !carriedFromDate">No entry yet for this date — defaulted to 80.0 kg.</p>
           <p class="hint" x-show="hasExisting">Editing the saved entry for this date.</p>
 
           <button class="primary accept-btn" @click="accept()">OK</button>

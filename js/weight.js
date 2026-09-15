@@ -16,6 +16,7 @@ function weightPage() {
     date: todayStr(),
     weightKg: DEFAULT_KG,
     hasExisting: false,
+    carriedFromDate: null,  // date the current (unsaved) weightKg was carried forward from, if any
     savedFlash: false,
     entries: [],           // all rows from db.weights, sorted by date
     chartMode: 'day',       // 'day' | 'week-avg' | 'monday'
@@ -37,9 +38,19 @@ function weightPage() {
       if (row) {
         this.weightKg = row.weightKg;
         this.hasExisting = true;
+        this.carriedFromDate = null;
+        return;
+      }
+      this.hasExisting = false;
+      // No entry for this date — carry forward the closest prior entry (e.g.
+      // "yesterday's weight") rather than always resetting to the default.
+      const prior = await db.weights.where('date').below(this.date).last();
+      if (prior) {
+        this.weightKg = prior.weightKg;
+        this.carriedFromDate = prior.date;
       } else {
         this.weightKg = DEFAULT_KG;
-        this.hasExisting = false;
+        this.carriedFromDate = null;
       }
     },
 
