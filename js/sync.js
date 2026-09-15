@@ -1,9 +1,17 @@
 // Optional Google Drive AppData sync.
 // When NOT signed in, this module does nothing and the app runs as before
-// (single-device IndexedDB). When signed in, the whole weights table is
-// serialized to a `weighttracker.json` file in the user's private appdata
-// folder on Drive and re-uploaded on every data change (debounced 3s). Reads
-// happen at sign-in time; after that IndexedDB is authoritative in-session.
+// (single-device IndexedDB). When signed in, the weights table is kept in
+// sync with a `weighttracker.json` file in the user's private appdata
+// folder on Drive:
+//   - local changes are uploaded automatically (debounced 3s)
+//   - remote changes are pulled and merged in on every reconnect (page load
+//     or silent session restore), on tab focus, and every 5 minutes while
+//     the tab stays open — so two devices signed into the same account
+//     converge without requiring a reload on either one.
+// The merge is per-entry: for each date, whichever side has the newer
+// `updatedAt` wins. This is safe to run silently and often (no "which do
+// you want to keep" prompt needed) because it never discards a genuinely
+// newer edit on either side.
 //
 // Design notes:
 // - Sync metadata (OAuth client id, last-sync timestamp, tokens) lives in
@@ -12,7 +20,10 @@
 //   device/deployment configures its own OAuth client id so it should not
 //   sync as app data.
 // - Every DB mutation fires `data-changed` (see db.js); this module debounces
-//   those and schedules an upload. Uploads suppressed during hydration.
+//   those and schedules an upload. Uploads suppressed during hydration
+//   (full-replace import), but NOT during a merge — a merge that pulls in
+//   remote rows should still push the resulting union back to Drive so
+//   other devices converge too.
 // - Silent token refresh runs before each Drive call so an expired token
 //   doesn't fail the operation.
 //
@@ -85,6 +96,16 @@ async function initSync() {
   }
 
   window.addEventListener('data-changed', () => scheduleUpload());
+
+  // Pull in whatever another device may have pushed since our last reconcile
+  // — on tab focus (covers "switched back to an already-open tab") and on a
+  // timer (covers "left the tab open in the foreground for a while").
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && window.sync.signedIn) reconcile().catch(() => {});
+  });
+  setInterval(() => {
+    if (window.sync.signedIn) reconcile().catch(() => {});
+  }, 5 * 60 * 1000);
 }
 
 function waitForGoogleSdk() {
@@ -117,7 +138,7 @@ async function tryRestoreSession() {
     const client = getTokenClient();
     client.callback = async (resp) => {
       if (resp?.access_token) {
-        await afterTokenIssued(resp, /* firstSignIn = */ false);
+        await afterTokenIssued(resp);
         resolve(true);
       } else {
         resolve(false);
@@ -144,7 +165,7 @@ async function signIn() {
     const client = getTokenClient();
     client.callback = async (resp) => {
       if (resp?.access_token) {
-        await afterTokenIssued(resp, /* firstSignIn = */ true);
+        await afterTokenIssued(resp);
         resolve();
       } else {
         window.sync.lastError = resp?.error_description || resp?.error || 'Sign-in was cancelled or failed.';
@@ -156,7 +177,7 @@ async function signIn() {
   });
 }
 
-async function afterTokenIssued(resp, firstSignIn) {
+async function afterTokenIssued(resp) {
   window.sync._accessToken = resp.access_token;
   window.sync._tokenExpiresAt = Date.now() + (Number(resp.expires_in || 3600) * 1000);
   window.sync.signedIn = true;
@@ -172,9 +193,10 @@ async function afterTokenIssued(resp, firstSignIn) {
     }
   } catch { /* non-fatal */ }
   notifyState();
-  // First-time sign-in — reconcile with any existing local + remote data.
-  // For a silently restored session we skip this (would ask on every reload).
-  if (firstSignIn) await initialSync();
+  // Reconcile with Drive on every connect — fresh sign-in or a silently
+  // restored session both need this, since another device may have pushed
+  // changes since we last synced.
+  await reconcile();
 }
 
 function signOut() {
@@ -214,42 +236,55 @@ async function ensureFreshToken() {
   });
 }
 
-async function initialSync() {
-  await ensureFileId();
-  const localHasData = await isDbNonEmpty();
-
-  if (!window.sync._fileId) {
-    // No remote file yet — first time this account is used with the app
-    if (localHasData) await uploadNow(); // seed Drive with current local
-    return;
+// Pull the remote file (if any), merge it into local (newer `updatedAt` per
+// date wins — see file header), then push the resulting union back to Drive
+// so any local-only changes (e.g. made while offline or before sign-in)
+// reach the other device too. Safe to call often: a no-op merge triggers no
+// writes, so it doesn't spam Drive with redundant uploads.
+async function reconcile() {
+  if (!window.sync.signedIn) return;
+  try {
+    await ensureFileId();
+    if (window.sync._fileId) {
+      if (!await ensureFreshToken()) return;
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${window.sync._fileId}?alt=media`,
+        { headers: { Authorization: 'Bearer ' + window.sync._accessToken } }
+      );
+      if (!res.ok) throw new Error(`Drive download failed (${res.status})`);
+      const payload = await res.json();
+      await mergeFromRemote(payload.weights || []);
+    }
+  } catch (err) {
+    window.sync.lastError = String(err.message || err);
+    notifyState();
   }
-
-  if (!localHasData) {
-    // Empty local — safe to pull remote unconditionally
-    await downloadAndReplace();
-    return;
-  }
-
-  // Both exist — ask the user which to keep
-  const remoteMeta = await getFileMeta(window.sync._fileId);
-  const remoteTs = new Date(remoteMeta.modifiedTime).getTime();
-  const localTs = window.sync.lastSyncedAt || 0;
-  const remoteNewer = remoteTs > localTs;
-  const relativeAge = remoteNewer
-    ? `~${Math.max(1, Math.round((remoteTs - localTs) / 60000))} minutes newer than local's last sync`
-    : `older than local's last sync — you likely have unsaved local changes`;
-
-  const choice = confirm(
-    `Google Drive already has a weighttracker.json for this account (${relativeAge}).\n\n` +
-    `OK  = REPLACE local data with the copy from Drive\n` +
-    `Cancel = KEEP local data and overwrite Drive with it`
-  );
-  if (choice) await downloadAndReplace();
-  else       await uploadNow();
+  await uploadNow().catch(() => {}); // errors already surfaced via lastError inside uploadNow
 }
 
-async function isDbNonEmpty() {
-  return (await db.weights.count()) > 0;
+async function mergeFromRemote(remoteWeights) {
+  // Suppress the debounced auto-upload for these writes — reconcile() already
+  // pushes the merged result explicitly right after this, so letting
+  // scheduleUpload also fire here would just cause a redundant second upload.
+  // The entry form / chart still refresh normally: they listen for
+  // data-changed directly and don't check this flag.
+  window.sync._hydrating = true;
+  try {
+    await db.transaction('rw', db.weights, async () => {
+      for (const r of remoteWeights) {
+        if (!r || !r.date) continue;
+        const local = await db.weights.get(r.date);
+        if (!local || (r.updatedAt || 0) > (local.updatedAt || 0)) {
+          await db.weights.put({ date: r.date, weightKg: r.weightKg, updatedAt: r.updatedAt || 0 });
+        }
+      }
+    });
+  } finally {
+    window.sync._hydrating = false;
+  }
+  window.sync.lastSyncedAt = Date.now();
+  localStorage.setItem(LS_LAST_SYNC, String(window.sync.lastSyncedAt));
+  notifyState();
 }
 
 async function ensureFileId() {
@@ -262,31 +297,6 @@ async function ensureFileId() {
   const file = (data.files || [])[0];
   window.sync._fileId = file ? file.id : '';
   return file || null;
-}
-
-async function getFileMeta(fileId) {
-  if (!await ensureFreshToken()) throw new Error('Not signed in');
-  const url = `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,modifiedTime`;
-  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + window.sync._accessToken } });
-  if (!res.ok) throw new Error(`Drive meta failed (${res.status})`);
-  return res.json();
-}
-
-async function downloadAndReplace() {
-  if (!window.sync._fileId) return;
-  if (!await ensureFreshToken()) return;
-  const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${window.sync._fileId}?alt=media`,
-    { headers: { Authorization: 'Bearer ' + window.sync._accessToken } }
-  );
-  if (!res.ok) throw new Error(`Drive download failed (${res.status})`);
-  const payload = await res.json();
-  await hydrateFromPayload(payload);
-  window.sync.lastSyncedAt = Date.now();
-  localStorage.setItem(LS_LAST_SYNC, String(window.sync.lastSyncedAt));
-  notifyState();
-  // Fire data-changed so the entry form and chart refresh from the new data
-  window.dispatchEvent(new CustomEvent('data-changed'));
 }
 
 async function hydrateFromPayload(data) {
@@ -407,7 +417,7 @@ function syncPanel() {
 
     async signIn()  { await gSignIn().catch(() => {}); },
     signOut()       { gSignOut(); },
-    async syncNow() { await gUploadNow().catch(() => {}); },
+    async syncNow() { await gReconcile().catch(() => {}); },
 
     formatTime(ms) {
       if (!ms) return 'never';
@@ -421,6 +431,7 @@ window.initSync = initSync;
 window.gSignIn = signIn;
 window.gSignOut = signOut;
 window.gUploadNow = uploadNow;
+window.gReconcile = reconcile;
 window.gBuildSyncPayload = buildPayload;
 window.gHydrateFromPayload = hydrateFromPayload;
 window.syncPanel = syncPanel;
